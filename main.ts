@@ -9,7 +9,7 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -18,8 +18,28 @@ const repoRoot = fileURLToPath(new URL('.', import.meta.url));
 const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
 // Start from an empty output so a stale file can never slip into an entry.
-rmSync(outputDir, { recursive: true, force: true });
+// Remove only the contents, never the directory itself: the grader's
+// /output is owned by root and rmdir of it needs write permission on its
+// parent, which the grader user does not have (EPERM). Emptying the
+// contents is enough and works with only write permission on /output.
+// A previous run's copies are read-only (cpSync preserves the modes of
+// the read-only /bot source), so make each entry writable before
+// removing it, or a second run would fail with EACCES on its own output.
+function makeWritable(path: string): void {
+  const st = lstatSync(path);
+  if (st.isSymbolicLink()) return;
+  if (st.isDirectory()) {
+    for (const child of readdirSync(path)) makeWritable(join(path, child));
+  }
+  chmodSync(path, st.mode | 0o200);
+}
+
 mkdirSync(outputDir, { recursive: true });
+for (const child of readdirSync(outputDir)) {
+  const childPath = join(outputDir, child);
+  makeWritable(childPath);
+  rmSync(childPath, { recursive: true, force: true });
+}
 
 cpSync(join(repoRoot, 'game'), join(outputDir, 'game'), { recursive: true });
 
